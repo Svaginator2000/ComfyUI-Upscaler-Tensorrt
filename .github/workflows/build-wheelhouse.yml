@@ -38,7 +38,6 @@ jobs:
       - name: Write package targets
         run: |
           cat > wheel-targets.txt <<EOF
-          tensorrt
           tensorrt-${CUDA_CHANNEL}
           tensorrt-${CUDA_CHANNEL}-bindings
           tensorrt-${CUDA_CHANNEL}-libs
@@ -64,7 +63,6 @@ jobs:
           from packaging.utils import parse_wheel_filename
 
           targets = {
-              "tensorrt",
               "tensorrt-cu13",
               "tensorrt-cu13-bindings",
               "tensorrt-cu13-libs",
@@ -83,13 +81,12 @@ jobs:
               if name in targets:
                   versions[name] = str(version)
 
-          required = {"tensorrt", "tensorrt-cu13", "tensorrt-cu13-bindings", "tensorrt-cu13-libs", "polygraphy"}
+          required = {"tensorrt-cu13", "tensorrt-cu13-bindings", "tensorrt-cu13-libs", "polygraphy"}
           missing = sorted(required - set(versions))
           if missing:
               raise SystemExit(f"Missing expected wheels: {', '.join(missing)}")
 
           wheel_requirements = [
-              f"tensorrt=={versions['tensorrt']}",
               f"tensorrt-cu13=={versions['tensorrt-cu13']}",
               f"tensorrt-cu13-bindings=={versions['tensorrt-cu13-bindings']}",
               f"tensorrt-cu13-libs=={versions['tensorrt-cu13-libs']}",
@@ -105,7 +102,6 @@ jobs:
               "cuda_channel": os.environ["CUDA_CHANNEL"],
               "nvidia_index_url": os.environ["NVIDIA_INDEX_URL"],
               "packages": {
-                  "tensorrt": versions["tensorrt"],
                   "tensorrt-cu13": versions["tensorrt-cu13"],
                   "tensorrt-cu13-bindings": versions["tensorrt-cu13-bindings"],
                   "tensorrt-cu13-libs": versions["tensorrt-cu13-libs"],
@@ -120,13 +116,13 @@ jobs:
 
           artifact_name = (
               f"wheelhouse-linux-py{os.environ['PYTHON_VERSION'].replace('.', '')}-"
-              f"{os.environ['CUDA_CHANNEL']}-trt-{versions['tensorrt']}-"
+              f"{os.environ['CUDA_CHANNEL']}-trt-{versions['tensorrt-cu13']}-"
               f"poly-{versions['polygraphy']}"
           )
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
               output_file.write(f"artifact_name={artifact_name}\n")
-              output_file.write(f"tensorrt_version={versions['tensorrt']}\n")
+              output_file.write(f"tensorrt_version={versions['tensorrt-cu13']}\n")
               output_file.write(f"polygraphy_version={versions['polygraphy']}\n")
 
           print(json.dumps(manifest, indent=2))
