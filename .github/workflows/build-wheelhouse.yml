@@ -19,6 +19,7 @@ jobs:
     env:
       PYTHON_VERSION: "3.13"
       CUDA_CHANNEL: "cu13"
+      NVIDIA_INDEX_URL: "https://pypi.nvidia.com"
 
     steps:
       - name: Check out repository
@@ -32,73 +33,104 @@ jobs:
           cache-dependency-path: .github/workflows/build-wheelhouse.yml
 
       - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+        run: python -m pip install --upgrade pip packaging
 
-      - name: Resolve latest TensorRT and Polygraphy versions
-        id: resolve
+      - name: Write package targets
+        run: |
+          cat > wheel-targets.txt <<EOF
+          tensorrt
+          tensorrt-${CUDA_CHANNEL}
+          tensorrt-${CUDA_CHANNEL}-bindings
+          tensorrt-${CUDA_CHANNEL}-libs
+          polygraphy
+          EOF
+
+      - name: Download latest compatible wheel packages
+        run: |
+          mkdir -p wheelhouse
+          python -m pip download \
+            --dest wheelhouse \
+            --only-binary=:all: \
+            --extra-index-url "$NVIDIA_INDEX_URL" \
+            -r wheel-targets.txt
+
+      - name: Generate manifest and artifact metadata
+        id: manifest
         run: |
           python - <<'PY'
           import json
           import os
-          import urllib.request
           from pathlib import Path
+          from packaging.utils import parse_wheel_filename
 
-          cuda_channel = os.environ["CUDA_CHANNEL"]
-          packages = [f"tensorrt-{cuda_channel}", "polygraphy"]
+          targets = {
+              "tensorrt",
+              "tensorrt-cu13",
+              "tensorrt-cu13-bindings",
+              "tensorrt-cu13-libs",
+              "polygraphy",
+          }
+          wheelhouse = Path("wheelhouse")
+          wheels = sorted(wheelhouse.glob("*.whl"))
+          if not wheels:
+              raise SystemExit("No wheel files were downloaded")
 
-          def latest_version(package_name: str) -> str:
-              with urllib.request.urlopen(f"https://pypi.org/pypi/{package_name}/json") as response:
-                  payload = json.load(response)
-              version = payload["info"]["version"]
-              if not version:
-                  raise SystemExit(f"Could not resolve latest version for {package_name}")
-              return version
+          versions = {}
+          files = []
+          for wheel in wheels:
+              name, version, _, _ = parse_wheel_filename(wheel.name)
+              files.append(wheel.name)
+              if name in targets:
+                  versions[name] = str(version)
 
-          resolved = [f"{package}=={latest_version(package)}" for package in packages]
+          required = {"tensorrt", "tensorrt-cu13", "tensorrt-cu13-bindings", "tensorrt-cu13-libs", "polygraphy"}
+          missing = sorted(required - set(versions))
+          if missing:
+              raise SystemExit(f"Missing expected wheels: {', '.join(missing)}")
 
-          wheel_requirements = Path("wheel-requirements.txt")
-          wheel_requirements.write_text("\n".join(resolved) + "\n", encoding="utf-8")
+          wheel_requirements = [
+              f"tensorrt=={versions['tensorrt']}",
+              f"tensorrt-cu13=={versions['tensorrt-cu13']}",
+              f"tensorrt-cu13-bindings=={versions['tensorrt-cu13-bindings']}",
+              f"tensorrt-cu13-libs=={versions['tensorrt-cu13-libs']}",
+              f"polygraphy=={versions['polygraphy']}",
+          ]
+          Path("wheel-requirements.txt").write_text(
+              "\n".join(wheel_requirements) + "\n",
+              encoding="utf-8",
+          )
 
           manifest = {
               "python_version": os.environ["PYTHON_VERSION"],
-              "cuda_channel": cuda_channel,
+              "cuda_channel": os.environ["CUDA_CHANNEL"],
+              "nvidia_index_url": os.environ["NVIDIA_INDEX_URL"],
               "packages": {
-                  requirement.split("==", 1)[0]: requirement.split("==", 1)[1]
-                  for requirement in resolved
+                  "tensorrt": versions["tensorrt"],
+                  "tensorrt-cu13": versions["tensorrt-cu13"],
+                  "tensorrt-cu13-bindings": versions["tensorrt-cu13-bindings"],
+                  "tensorrt-cu13-libs": versions["tensorrt-cu13-libs"],
+                  "polygraphy": versions["polygraphy"],
               },
+              "files": files,
           }
           Path("wheel-manifest.json").write_text(
               json.dumps(manifest, indent=2) + "\n",
               encoding="utf-8",
           )
 
-          trt_version = manifest["packages"][f"tensorrt-{cuda_channel}"]
-          polygraphy_version = manifest["packages"]["polygraphy"]
           artifact_name = (
               f"wheelhouse-linux-py{os.environ['PYTHON_VERSION'].replace('.', '')}-"
-              f"{cuda_channel}-trt-{trt_version}-poly-{polygraphy_version}"
+              f"{os.environ['CUDA_CHANNEL']}-trt-{versions['tensorrt']}-"
+              f"poly-{versions['polygraphy']}"
           )
 
-          github_output = os.environ.get("GITHUB_OUTPUT")
-          if github_output:
-              with open(github_output, "a", encoding="utf-8") as output_file:
-                  output_file.write(f"artifact_name={artifact_name}\n")
-                  output_file.write(f"tensorrt_version={trt_version}\n")
-                  output_file.write(f"polygraphy_version={polygraphy_version}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
+              output_file.write(f"artifact_name={artifact_name}\n")
+              output_file.write(f"tensorrt_version={versions['tensorrt']}\n")
+              output_file.write(f"polygraphy_version={versions['polygraphy']}\n")
 
-          print("Resolved wheel requirements:")
-          print(wheel_requirements.read_text(encoding="utf-8"))
-          print("Manifest:")
           print(json.dumps(manifest, indent=2))
           PY
-
-      - name: Download latest wheel packages
-        run: |
-          mkdir -p wheelhouse
-          python -m pip download \
-            --dest wheelhouse \
-            --only-binary=:all: \
-            -r wheel-requirements.txt
 
       - name: Show wheelhouse contents
         run: ls -lah wheelhouse
@@ -110,8 +142,9 @@ jobs:
             echo
             echo "- Python: $PYTHON_VERSION"
             echo "- CUDA channel: $CUDA_CHANNEL"
-            echo "- TensorRT: ${{ steps.resolve.outputs.tensorrt_version }}"
-            echo "- Polygraphy: ${{ steps.resolve.outputs.polygraphy_version }}"
+            echo "- NVIDIA index: $NVIDIA_INDEX_URL"
+            echo "- TensorRT: ${{ steps.manifest.outputs.tensorrt_version }}"
+            echo "- Polygraphy: ${{ steps.manifest.outputs.polygraphy_version }}"
             echo
             echo "### Requirements"
             echo '```text'
@@ -127,9 +160,10 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.resolve.outputs.artifact_name }}
+          name: ${{ steps.manifest.outputs.artifact_name }}
           path: |
             wheelhouse/*.whl
+            wheel-targets.txt
             wheel-requirements.txt
             wheel-manifest.json
           if-no-files-found: error
