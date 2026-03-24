@@ -1,0 +1,90 @@
+name: Build Wheelhouse
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - requirements.txt
+      - .github/workflows/build-wheelhouse.yml
+  pull_request:
+    paths:
+      - requirements.txt
+      - .github/workflows/build-wheelhouse.yml
+
+jobs:
+  download-wheels:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PYTHON_VERSION: "3.13"
+      CUDA_CHANNEL: "cu13"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Resolve TensorRT and Polygraphy wheel requirements
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          cuda_channel = os.environ["CUDA_CHANNEL"]
+          resolved = []
+
+          for raw_line in Path("requirements.txt").read_text(encoding="utf-8").splitlines():
+              requirement = raw_line.split("#", 1)[0].strip()
+              if not requirement:
+                  continue
+
+              normalized = requirement.lower().replace("_", "-")
+              for marker in ("[", "=", "<", ">", "!", "~"):
+                  normalized = normalized.split(marker, 1)[0]
+              normalized = normalized.strip()
+
+              if normalized == "tensorrt":
+                  resolved.append(f"tensorrt-{cuda_channel}")
+              elif normalized == "polygraphy":
+                  resolved.append(requirement)
+
+          if not resolved:
+              raise SystemExit("No tensorrt/polygraphy entries found in requirements.txt")
+
+          wheel_requirements = Path("wheel-requirements.txt")
+          wheel_requirements.write_text("\n".join(resolved) + "\n", encoding="utf-8")
+
+          print("Resolved wheel requirements:")
+          print(wheel_requirements.read_text(encoding="utf-8"))
+          PY
+
+      - name: Download wheel packages
+        run: |
+          mkdir -p wheelhouse
+          python -m pip download \
+            --dest wheelhouse \
+            --only-binary=:all: \
+            -r wheel-requirements.txt
+
+      - name: Show wheelhouse contents
+        run: ls -lah wheelhouse
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheelhouse-linux-py313-cu13
+          path: |
+            wheelhouse/*.whl
+            wheel-requirements.txt
+          if-no-files-found: error
+          retention-days: 14
